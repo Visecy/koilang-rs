@@ -1,0 +1,12 @@
+[package]
+name = "koilang"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+koicore = "0.2.2"
+thiserror = "1.0"
+koilang-macros = { path = "koilang-macros" }
+
+[dev-dependencies]
+tempfile = "3.0"
