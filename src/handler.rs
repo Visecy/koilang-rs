@@ -7,9 +7,9 @@
 //!
 //! ## Manual Implementation
 //!
-//! ```rust,ignore
-//! use koilang_rs::{CommandHandler, Result};
-//! use koicore::command::{Value, Parameter};
+//! ```rust
+//! use koilang::{CommandHandler, Runtime, Result};
+//! use koicore::command::Value;
 //! use std::collections::HashMap;
 //!
 //! struct MyEnvironment {
@@ -22,6 +22,7 @@
 //!         name: &str,
 //!         args: &[Value],
 //!         _kwargs: &HashMap<String, Value>,
+//!         _runtime: &mut Runtime,
 //!     ) -> Result<()> {
 //!         match name {
 //!             "increment" => {
@@ -39,18 +40,22 @@
 //!             }
 //!             "@text" => {
 //!                 let content = args.get(0)
-//!                     .and_then(|v| v.as_str())
+//!                     .map(|v| match v {
+//!                         Value::String(s) => s.as_str(),
+//!                         _ => "",
+//!                     })
 //!                     .unwrap_or("");
 //!                 println!("Text: {}", content);
 //!                 Ok(())
 //!             }
-//!             _ => Err(koilang_rs::KoiError::command_not_found(name, 0)),
+//!             _ => Err(koilang::KoiError::command_not_found(name)),
 //!         }
 //!     }
 //! }
 //! ```
 
 use crate::error::Result;
+use crate::runtime::Runtime;
 use koicore::command::Value;
 use std::collections::HashMap;
 
@@ -84,6 +89,7 @@ pub trait CommandHandler: Send + 'static {
     /// * `name` - The command name (e.g., "hello", "@start", "@text")
     /// * `args` - Positional arguments as [`Value`] slices
     /// * `kwargs` - Named arguments as a map from String to [`Value`]
+    /// * `runtime` - Mutable reference to the current [`Runtime`]
     ///
     /// # Returns
     ///
@@ -93,14 +99,14 @@ pub trait CommandHandler: Send + 'static {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// fn handle_command(&mut self, name: &str, args: &[Value], kwargs: &HashMap<String, Value>) -> Result<()> {
+    /// fn handle_command(&mut self, name: &str, args: &[Value], kwargs: &HashMap<String, Value>, runtime: &mut Runtime) -> Result<()> {
     ///     match name {
     ///         "greet" => {
-    ///             let name = args.get(0).and_then(|v| v.as_str()).unwrap_or("World");
+    ///             let name = args.get(0).and_then(|v| v.as_string()).unwrap_or("World");
     ///             println!("Hello, {}!", name);
     ///             Ok(())
     ///         }
-    ///         _ => Err(KoiError::command_not_found(name, 0))
+    ///         _ => Err(KoiError::command_not_found(name))
     ///     }
     /// }
     /// ```
@@ -109,6 +115,7 @@ pub trait CommandHandler: Send + 'static {
         name: &str,
         args: &[Value],
         kwargs: &HashMap<String, Value>,
+        runtime: &mut Runtime,
     ) -> Result<()>;
 }
 
@@ -121,8 +128,9 @@ pub(crate) fn dispatch_to_handler(
     name: &str,
     args: &[Value],
     kwargs: &HashMap<String, Value>,
+    runtime: &mut Runtime,
 ) -> Result<()> {
-    handler.handle_command(name, args, kwargs)
+    handler.handle_command(name, args, kwargs, runtime)
 }
 
 #[cfg(test)]
@@ -140,10 +148,11 @@ mod tests {
             name: &str,
             _args: &[Value],
             _kwargs: &HashMap<String, Value>,
+            _runtime: &mut Runtime,
         ) -> Result<()> {
             self.last_command = Some(name.to_string());
             if name == "fail" {
-                Err(KoiError::runtime("test failure", 0))
+                Err(KoiError::runtime("test failure"))
             } else {
                 Ok(())
             }
@@ -153,16 +162,18 @@ mod tests {
     #[test]
     fn test_handler_dispatch() {
         let mut handler = TestHandler { last_command: None };
+        let mut runtime = Runtime::new();
         
-        dispatch_to_handler(&mut handler, "test", &[], &HashMap::new()).unwrap();
+        dispatch_to_handler(&mut handler, "test", &[], &HashMap::new(), &mut runtime).unwrap();
         assert_eq!(handler.last_command, Some("test".to_string()));
     }
 
     #[test]
     fn test_handler_error() {
         let mut handler = TestHandler { last_command: None };
+        let mut runtime = Runtime::new();
         
-        let result = dispatch_to_handler(&mut handler, "fail", &[], &HashMap::new());
+        let result = dispatch_to_handler(&mut handler, "fail", &[], &HashMap::new(), &mut runtime);
         assert!(result.is_err());
     }
 }

@@ -6,9 +6,9 @@
 use crate::error::{KoiError, Result};
 use crate::handler::CommandHandler;
 use koicore::command::{Command, Value};
-use koicore::parser::{Parser, ParserConfig, StringInputSource};
+use koicore::parser::{FileInputSource, Parser, ParserConfig, StringInputSource, TextInputSource};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::Path;
 
 /// Type alias for middleware functions.
 ///
@@ -17,8 +17,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// middleware or the actual command handler.
 pub type MiddlewareFn =
     dyn Fn(&Runtime, &Command, &dyn Fn(&Command) -> Result<()>) -> Result<()>;
-
-static RUNTIME_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 
 /// Runtime for executing KoiLang scripts.
 ///
@@ -32,7 +30,7 @@ static RUNTIME_ID_COUNTER: AtomicUsize = AtomicUsize::new(1);
 /// # Examples
 ///
 /// ```rust,ignore
-/// use koilang_rs::Runtime;
+/// use koilang::Runtime;
 ///
 /// let mut runtime = Runtime::new();
 /// runtime.execute_file("script.ktxt").unwrap();
@@ -64,9 +62,6 @@ pub struct Runtime {
 
     /// Session depth for lifecycle management.
     lifecycle_depth: usize,
-
-    /// Unique runtime ID.
-    id: usize,
 }
 
 impl Runtime {
@@ -82,7 +77,6 @@ impl Runtime {
             label_index: HashMap::new(),
             current_position: 0,
             lifecycle_depth: 0,
-            id: RUNTIME_ID_COUNTER.fetch_add(1, Ordering::SeqCst),
         }
     }
 
@@ -91,11 +85,6 @@ impl Runtime {
         let mut runtime = Self::new();
         runtime.parser_config = Some(config);
         runtime
-    }
-
-    /// Get the runtime ID.
-    pub fn id(&self) -> usize {
-        self.id
     }
 
     /// Check if cache is enabled.
@@ -134,7 +123,6 @@ impl Runtime {
         if !self.cache_enabled {
             return Err(KoiError::runtime(
                 "Cache must be enabled to register labels",
-                self.id,
             ));
         }
 
@@ -143,7 +131,6 @@ impl Runtime {
         if self.label_index.contains_key(label) {
             return Err(KoiError::runtime(
                 format!("Label '{}' already registered", label),
-                self.id,
             ));
         }
 
@@ -158,7 +145,6 @@ impl Runtime {
         if !self.cache_enabled {
             return Err(KoiError::runtime(
                 "Cache must be enabled for jumps",
-                self.id,
             ));
         }
 
@@ -175,7 +161,6 @@ impl Runtime {
             Some(&pos) => self.jump_to_position(pos),
             None => Err(KoiError::runtime(
                 format!("Label '{}' not found", label),
-                self.id,
             )),
         }
     }
@@ -193,7 +178,6 @@ impl Runtime {
         if !self.cache_enabled {
             return Err(KoiError::runtime(
                 "Cache must be enabled for scan_and_jump",
-                self.id,
             ));
         }
 
@@ -207,7 +191,7 @@ impl Runtime {
             }
         }
 
-        Err(KoiError::runtime("Jump target not found", self.id))
+        Err(KoiError::runtime("Jump target not found"))
     }
 
     /// Probe (fill cache) until a condition is met, without jumping.
@@ -218,7 +202,6 @@ impl Runtime {
         if !self.cache_enabled {
             return Err(KoiError::runtime(
                 "Cache must be enabled for probe_until",
-                self.id,
             ));
         }
 
@@ -285,7 +268,7 @@ impl Runtime {
         if let Some(mut env) = self.env_stack.pop() {
             // Dispatch @end command
             if self.lifecycle_depth > 0 {
-                let _ = env.handle_command("@end", &[], &HashMap::new());
+                let _ = env.handle_command("@end", &[], &HashMap::new(), self);
             }
         }
     }
@@ -310,8 +293,14 @@ impl Runtime {
         let kwargs = HashMap::new(); // TODO: Parse named parameters
 
         // Try each environment in the stack (top to bottom)
+        // We need to use a raw pointer here to work around borrow checker limitations
+        // when passing &mut self to handle_command while iterating over env_stack
+        let runtime_ptr = self as *mut Runtime;
         for env in self.env_stack.iter_mut().rev() {
-            match env.handle_command(&name, &args, &kwargs) {
+            // SAFETY: We only access the runtime through one mutable reference at a time
+            // and the environment stack iteration doesn't overlap with runtime usage
+            let runtime_ref = unsafe { &mut *runtime_ptr };
+            match env.handle_command(&name, &args, &kwargs, runtime_ref) {
                 Ok(()) => return Ok(()),
                 Err(KoiError::CommandNotFound { .. }) => continue,
                 Err(e) => return Err(e),
@@ -323,7 +312,7 @@ impl Runtime {
             return Ok(());
         }
 
-        Err(KoiError::command_not_found(name, self.id))
+        Err(KoiError::command_not_found(name))
     }
 
     /// Dispatch a command through the middleware chain.
@@ -354,7 +343,7 @@ impl Runtime {
     /// # Arguments
     ///
     /// * `source` - The KoiLang source string
-    pub fn execute(&mut self, source: &str) -> Result<()> {
+    pub fn execute_str(&mut self, source: &str) -> Result<()> {
         let input = StringInputSource::new(source);
         let config = self.parser_config.clone().unwrap_or_default();
         let mut parser = Parser::new(input, config);
@@ -363,15 +352,20 @@ impl Runtime {
     }
 
     /// Run with a pre-configured parser.
-    fn run_with_parser(&mut self, parser: &mut Parser<StringInputSource>) -> Result<()> {
+    fn run_with_parser<S>(&mut self, parser: &mut Parser<S>) -> Result<()>
+    where
+        S: TextInputSource,
+    {
         // Enter session
         let is_outermost = self.lifecycle_depth == 0;
         self.lifecycle_depth += 1;
 
         if is_outermost {
             // Dispatch @start to all environments
+            let runtime_ptr = self as *mut Runtime;
             for env in self.env_stack.iter_mut() {
-                let _ = env.handle_command("@start", &[], &HashMap::new());
+                let runtime_ref = unsafe { &mut *runtime_ptr };
+                let _ = env.handle_command("@start", &[], &HashMap::new(), runtime_ref);
             }
         }
 
@@ -383,8 +377,10 @@ impl Runtime {
 
         if is_outermost {
             // Dispatch @end to all environments (in reverse order)
+            let runtime_ptr = self as *mut Runtime;
             for env in self.env_stack.iter_mut().rev() {
-                let _ = env.handle_command("@end", &[], &HashMap::new());
+                let runtime_ref = unsafe { &mut *runtime_ptr };
+                let _ = env.handle_command("@end", &[], &HashMap::new(), runtime_ref);
             }
         }
 
@@ -392,7 +388,10 @@ impl Runtime {
     }
 
     /// Main execution loop.
-    fn execution_loop(&mut self, parser: &mut Parser<StringInputSource>) -> Result<()> {
+    fn execution_loop<S>(&mut self, parser: &mut Parser<S>) -> Result<()>
+    where
+        S: TextInputSource,
+    {
         loop {
             // Check if we should use cached commands or parse new ones
             let cmd = if self.cache_enabled && self.current_position < self.command_cache.len() {
@@ -432,6 +431,53 @@ impl Runtime {
         Ok(())
     }
 
+    /// Execute a KoiLang script from any input source.
+    ///
+    /// # Arguments
+    ///
+    /// * `source` - The input source implementing `TextInputSource`
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use koilang::Runtime;
+    /// use koicore::parser::StringInputSource;
+    ///
+    /// let mut runtime = Runtime::new();
+    /// let source = StringInputSource::new("#greet \"World\"");
+    /// runtime.execute(source).unwrap();
+    /// ```
+    pub fn execute<S>(&mut self, source: S) -> Result<()>
+    where
+        S: TextInputSource,
+    {
+        let config = self.parser_config.clone().unwrap_or_default();
+        let mut parser = Parser::new(source, config);
+        self.run_with_parser(&mut parser)
+    }
+
+    /// Execute a KoiLang script from a file.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the KoiLang script file
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use koilang::Runtime;
+    ///
+    /// let mut runtime = Runtime::new();
+    /// runtime.execute_file("script.ktxt").unwrap();
+    /// ```
+    pub fn execute_file<P>(&mut self, path: P) -> Result<()>
+    where
+        P: AsRef<Path>,
+    {
+        let input = FileInputSource::new(path)?;
+        self.execute(input)
+    }
+
     /// Get a reference to the environment stack.
     pub fn env_stack(&self) -> &[Box<dyn CommandHandler>] {
         &self.env_stack
@@ -447,10 +493,6 @@ impl Runtime {
         self.current_command.as_ref()
     }
 
-    // =========================================================================
-    // Executor Methods (merged from executor.rs)
-    // =========================================================================
-
     /// Execute a command programmatically through the runtime's dispatch chain.
     ///
     /// # Arguments
@@ -462,7 +504,8 @@ impl Runtime {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use koilang_rs::Runtime;
+    /// use koilang::Runtime;
+    /// use std::collections::HashMap;
     ///
     /// let mut runtime = Runtime::new();
     /// runtime.execute_command("hello", &["World".into()], &HashMap::new()).unwrap();
@@ -474,6 +517,29 @@ impl Runtime {
         kwargs: &HashMap<String, Value>,
     ) -> Result<()> {
         self.dispatch_args(name, args, kwargs)
+    }
+
+    /// Execute a pre-constructed `Command` object through the runtime's dispatch chain.
+    ///
+    /// This method allows executing a `koicore::Command` directly, going through
+    /// the full dispatch chain including middleware and environment stack.
+    ///
+    /// # Arguments
+    ///
+    /// * `cmd` - The command to execute
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use koilang::Runtime;
+    /// use koicore::command::Command;
+    ///
+    /// let mut runtime = Runtime::new();
+    /// let cmd = Command::new("greet", vec!["World".into()]);
+    /// runtime.execute_command_obj(&cmd).unwrap();
+    /// ```
+    pub fn execute_command_obj(&mut self, cmd: &Command) -> Result<()> {
+        self.dispatch(cmd)
     }
 
     /// Execute a command directly on a specific environment.
@@ -488,7 +554,8 @@ impl Runtime {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use koilang_rs::Runtime;
+    /// use koilang::Runtime;
+    /// use std::collections::HashMap;
     ///
     /// let mut runtime = Runtime::new();
     /// runtime.execute_on_environment(0, "local_command", &[], &HashMap::new()).unwrap();
@@ -500,14 +567,17 @@ impl Runtime {
         args: &[Value],
         kwargs: &HashMap<String, Value>,
     ) -> Result<()> {
-        if let Some(env) = self.env_stack.get_mut(index) {
-            env.handle_command(name, args, kwargs)
-        } else {
-            Err(KoiError::runtime(
+        if index >= self.env_stack.len() {
+            return Err(KoiError::runtime(
                 format!("Environment index {} out of bounds", index),
-                self.id,
-            ))
+            ));
         }
+        
+        // Use raw pointer to work around borrow checker
+        let runtime_ptr = self as *mut Runtime;
+        let env = &mut self.env_stack[index];
+        let runtime_ref = unsafe { &mut *runtime_ptr };
+        env.handle_command(name, args, kwargs, runtime_ref)
     }
 
     /// Create a command builder for fluent command construction.
@@ -523,7 +593,7 @@ impl Runtime {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// use koilang_rs::Runtime;
+    /// use koilang::Runtime;
     ///
     /// let mut runtime = Runtime::new();
     /// runtime.cmd("draw")
@@ -557,7 +627,7 @@ impl Default for Runtime {
 /// # Examples
 ///
 /// ```rust,ignore
-/// use koilang_rs::Runtime;
+/// use koilang::Runtime;
 ///
 /// let mut runtime = Runtime::new();
 /// runtime
@@ -638,6 +708,7 @@ mod tests {
             name: &str,
             _args: &[Value],
             _kwargs: &HashMap<String, Value>,
+            _runtime: &mut Runtime,
         ) -> Result<()> {
             self.commands.lock().unwrap().push(name.to_string());
             Ok(())
@@ -708,5 +779,61 @@ mod tests {
             .unwrap();
 
         assert_eq!(commands.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_execute_with_source() {
+        let mut runtime = Runtime::new();
+        let (env, commands) = TestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let source = StringInputSource::new("#test_command\n#another_command");
+        runtime.execute(source).unwrap();
+
+        let cmds = commands.lock().unwrap();
+        // Includes @start and @end lifecycle hooks
+        assert_eq!(cmds.len(), 4);
+        assert_eq!(cmds[0], "@start");
+        assert_eq!(cmds[1], "test_command");
+        assert_eq!(cmds[2], "another_command");
+        assert_eq!(cmds[3], "@end");
+    }
+
+    #[test]
+    fn test_execute_command_obj() {
+        let mut runtime = Runtime::new();
+        let (env, commands) = TestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let cmd = Command::new("direct_command", vec![]);
+        runtime.execute_command_obj(&cmd).unwrap();
+
+        let cmds = commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0], "direct_command");
+    }
+
+    #[test]
+    fn test_execute_file() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        let mut runtime = Runtime::new();
+        let (env, commands) = TestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "#file_command").unwrap();
+        writeln!(temp_file, "#second_command").unwrap();
+
+        runtime.execute_file(temp_file.path()).unwrap();
+
+        let cmds = commands.lock().unwrap();
+        // Includes @start and @end lifecycle hooks
+        assert_eq!(cmds.len(), 4);
+        assert_eq!(cmds[0], "@start");
+        assert_eq!(cmds[1], "file_command");
+        assert_eq!(cmds[2], "second_command");
+        assert_eq!(cmds[3], "@end");
     }
 }

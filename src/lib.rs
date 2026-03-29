@@ -19,7 +19,7 @@
 //! ## Using Macros for Command Registration
 //!
 //! ```rust,ignore
-//! use koilang_rs::{Runtime, command, command_handler, Result};
+//! use koilang::{Runtime, command, command_handler, Result};
 //!
 //! struct MyEnv {
 //!     counter: i32,
@@ -45,13 +45,13 @@
 //!
 //! let mut runtime = Runtime::new();
 //! runtime.env_enter(Box::new(MyEnv { counter: 0 }));
-//! runtime.execute(r#"#greet "Alice""#).unwrap();
+//! runtime.execute_str(r#"#greet "Alice""#).unwrap();
 //! ```
 //!
 //! ## Manual CommandHandler Implementation
 //!
-//! ```rust,ignore
-//! use koilang_rs::{Runtime, CommandHandler, Result};
+//! ```rust
+//! use koilang::{Runtime, CommandHandler, Result};
 //! use koicore::command::Value;
 //! use std::collections::HashMap;
 //!
@@ -63,27 +63,33 @@
 //!         name: &str,
 //!         args: &[Value],
 //!         _kwargs: &HashMap<String, Value>,
+//!         _runtime: &mut Runtime,
 //!     ) -> Result<()> {
 //!         match name {
 //!             "greet" => {
-//!                 let name = args.get(0).and_then(|v| v.as_str()).unwrap_or("World");
+//!                 let name = args.get(0)
+//!                     .map(|v| match v {
+//!                         Value::String(s) => s.as_str(),
+//!                         _ => "World",
+//!                     })
+//!                     .unwrap_or("World");
 //!                 println!("Hello, {}!", name);
 //!                 Ok(())
 //!             }
-//!             _ => Err(koilang_rs::KoiError::command_not_found(name, 0)),
+//!             _ => Err(koilang::KoiError::command_not_found(name)),
 //!         }
 //!     }
 //! }
 //!
 //! let mut runtime = Runtime::new();
 //! runtime.env_enter(Box::new(MyEnv));
-//! runtime.execute(r#"#greet "Alice""#).unwrap();
+//! runtime.execute_str(r#"#greet "Alice""#).unwrap();
 //! ```
 //!
 //! ## Programmatic Command Execution
 //!
 //! ```rust,ignore
-//! use koilang_rs::Runtime;
+//! use koilang::Runtime;
 //!
 //! let mut runtime = Runtime::new();
 //! runtime.env_enter(Box::new(MyEnv));
@@ -101,15 +107,16 @@
 //!
 //! ## Programmatic Generation
 //!
-//! ```rust,ignore
-//! use koilang_rs::Writer;
+//! ```rust
+//! use koilang::Writer;
+//! use std::collections::HashMap;
 //!
 //! let mut buffer = Vec::new();
 //! let mut writer = Writer::new(&mut buffer, None).unwrap();
 //!
 //! writer.command("character", &["Alice".into(), "Hello!".into()], &HashMap::new()).unwrap();
 //! writer.text("This is narrative text.").unwrap();
-//! writer.close().unwrap();
+//! drop(writer);
 //!
 //! println!("{}", String::from_utf8(buffer).unwrap());
 //! ```
@@ -131,7 +138,7 @@ pub use koilang_macros::{command, command_handler};
 
 // Re-export koicore types for convenience
 pub use koicore::command::{Command, Parameter, Value};
-pub use koicore::parser::{Parser, ParserConfig};
+pub use koicore::parser::{Parser, ParserConfig, TextInputSource};
 pub use koicore::writer::{WriterConfig, FormatterOptions};
 
 #[cfg(test)]
@@ -150,6 +157,7 @@ mod tests {
             name: &str,
             _args: &[Value],
             _kwargs: &HashMap<String, Value>,
+            _runtime: &mut Runtime,
         ) -> Result<()> {
             self.commands.push(name.to_string());
             Ok(())
@@ -163,7 +171,7 @@ mod tests {
         runtime.env_enter(env);
 
         // Test execution
-        runtime.execute(r#"#test_command"#).unwrap();
+        runtime.execute_str(r#"#test_command"#).unwrap();
 
         // Test execute_command
         runtime.execute_command("another_command", &[], &HashMap::new()).unwrap();
@@ -254,7 +262,7 @@ mod tests {
         runtime.env_enter(Box::new(env));
 
         // Execute a script to trigger lifecycle hooks
-        runtime.execute(r#"#greet "Test""#).unwrap();
+        runtime.execute_str(r#"#greet "Test""#).unwrap();
 
         let cmds = commands.lock().unwrap();
         assert!(cmds.contains(&"@start".to_string()));
@@ -285,5 +293,111 @@ mod tests {
         let cmds = commands.lock().unwrap();
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0], "annotation: note");
+    }
+
+    // Test Runtime injection in handlers
+    struct RuntimeInjectionTestEnv {
+        commands: Arc<Mutex<Vec<String>>>,
+        runtime_accessed: Arc<Mutex<bool>>,
+    }
+
+    impl RuntimeInjectionTestEnv {
+        fn new() -> (Self, Arc<Mutex<Vec<String>>>, Arc<Mutex<bool>>) {
+            let commands = Arc::new(Mutex::new(Vec::new()));
+            let runtime_accessed = Arc::new(Mutex::new(false));
+            (Self { 
+                commands: commands.clone(), 
+                runtime_accessed: runtime_accessed.clone(),
+            }, commands, runtime_accessed)
+        }
+    }
+
+    #[command_handler]
+    impl RuntimeInjectionTestEnv {
+        // Handler with only Runtime parameter
+        #[command(name = "with_runtime")]
+        fn with_runtime(&mut self, runtime: &mut Runtime) {
+            // Access runtime to verify injection works
+            let _ = runtime.is_cache_enabled();
+            *self.runtime_accessed.lock().unwrap() = true;
+            self.commands.lock().unwrap().push("with_runtime".to_string());
+        }
+
+        // Handler with Runtime and arguments
+        #[command(name = "runtime_and_args")]
+        fn runtime_and_args(&mut self, runtime: &mut Runtime, name: String, count: i32) {
+            let _ = runtime.is_cache_enabled();
+            *self.runtime_accessed.lock().unwrap() = true;
+            self.commands.lock().unwrap().push(format!("runtime_and_args: {} {}", name, count));
+        }
+
+        // Handler without Runtime (backward compatibility)
+        #[command(name = "without_runtime")]
+        fn without_runtime(&mut self, name: String) {
+            self.commands.lock().unwrap().push(format!("without_runtime: {}", name));
+        }
+
+        // Handler with Runtime at different position (first after self)
+        #[command(name = "runtime_first")]
+        fn runtime_first(&mut self, runtime: &mut Runtime, arg1: String) {
+            let _ = runtime.is_cache_enabled();
+            *self.runtime_accessed.lock().unwrap() = true;
+            self.commands.lock().unwrap().push(format!("runtime_first: {}", arg1));
+        }
+    }
+
+    #[test]
+    fn test_runtime_injection_only_runtime() {
+        let mut runtime = Runtime::new();
+        let (env, commands, accessed) = RuntimeInjectionTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        runtime.execute_command("with_runtime", &[], &HashMap::new()).unwrap();
+        
+        let cmds = commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0], "with_runtime");
+        assert!(*accessed.lock().unwrap());
+    }
+
+    #[test]
+    fn test_runtime_injection_with_args() {
+        let mut runtime = Runtime::new();
+        let (env, commands, accessed) = RuntimeInjectionTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        runtime.execute_command("runtime_and_args", &["Alice".into(), 42i64.into()], &HashMap::new()).unwrap();
+        
+        let cmds = commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0], "runtime_and_args: Alice 42");
+        assert!(*accessed.lock().unwrap());
+    }
+
+    #[test]
+    fn test_runtime_injection_backward_compat() {
+        let mut runtime = Runtime::new();
+        let (env, commands, _) = RuntimeInjectionTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        runtime.execute_command("without_runtime", &["Bob".into()], &HashMap::new()).unwrap();
+        
+        let cmds = commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0], "without_runtime: Bob");
+    }
+
+    #[test]
+    fn test_runtime_injection_first_position() {
+        let mut runtime = Runtime::new();
+        let (env, commands, accessed) = RuntimeInjectionTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        runtime.execute_command("runtime_first", &["Test".into()], &HashMap::new()).unwrap();
+        
+        let cmds = commands.lock().unwrap();
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0], "runtime_first: Test");
+        assert!(*accessed.lock().unwrap());
     }
 }

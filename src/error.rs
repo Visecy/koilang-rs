@@ -11,8 +11,6 @@ pub enum KoiError {
     Runtime {
         /// Error message.
         message: String,
-        /// Runtime ID for context.
-        runtime_id: usize,
     },
 
     /// Command not found error.
@@ -20,8 +18,6 @@ pub enum KoiError {
     CommandNotFound {
         /// Command name that was not found.
         name: String,
-        /// Runtime ID for context.
-        runtime_id: usize,
     },
 
     /// Jump request for control flow.
@@ -43,18 +39,16 @@ pub enum KoiError {
 
 impl KoiError {
     /// Create a new runtime error.
-    pub fn runtime(message: impl Into<String>, runtime_id: usize) -> Self {
+    pub fn runtime(message: impl Into<String>) -> Self {
         Self::Runtime {
             message: message.into(),
-            runtime_id,
         }
     }
 
     /// Create a new command not found error.
-    pub fn command_not_found(name: impl Into<String>, runtime_id: usize) -> Self {
+    pub fn command_not_found(name: impl Into<String>) -> Self {
         Self::CommandNotFound {
             name: name.into(),
-            runtime_id,
         }
     }
 
@@ -76,15 +70,6 @@ impl KoiError {
         }
     }
 
-    /// Get the runtime ID if available.
-    pub fn runtime_id(&self) -> Option<usize> {
-        match self {
-            Self::Runtime { runtime_id, .. } | Self::CommandNotFound { runtime_id, .. } => {
-                Some(*runtime_id)
-            }
-            _ => None,
-        }
-    }
 }
 
 /// Result type alias for KoiLang operations.
@@ -96,16 +81,15 @@ mod tests {
 
     #[test]
     fn test_runtime_error() {
-        let err = KoiError::runtime("test error", 1);
-        assert!(matches!(err, KoiError::Runtime { runtime_id: 1, .. }));
-        assert_eq!(err.runtime_id(), Some(1));
+        let err = KoiError::runtime("test error");
+        assert!(matches!(err, KoiError::Runtime { .. }));
     }
 
     #[test]
     fn test_command_not_found() {
-        let err = KoiError::command_not_found("test_cmd", 1);
+        let err = KoiError::command_not_found("test_cmd");
         assert!(
-            matches!(err, KoiError::CommandNotFound { name, runtime_id: 1 } if name == "test_cmd")
+            matches!(err, KoiError::CommandNotFound { name } if name == "test_cmd")
         );
     }
 

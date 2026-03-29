@@ -3,12 +3,12 @@ use proc_macro2::Span;
 use quote::quote;
 use syn::{
     parse_macro_input, Attribute, Expr, ExprLit, ImplItem, ItemFn, ItemImpl, Lit, Meta, MetaNameValue,
-    Pat, PatType, Type,
+    Pat, PatType, Type, TypeReference,
 };
 
-/// The crate name to use for koilang_rs types.
+/// The crate name to use for koilang types.
 /// When the macro is used within koilang-rs itself, we use `crate::`.
-/// Otherwise, we use `::koilang_rs::`.
+/// Otherwise, we use `::koilang::`.
 fn koilang_crate() -> proc_macro2::TokenStream {
     // Check if we're compiling within the koilang-rs crate itself
     // by checking the CARGO_PKG_NAME environment variable
@@ -16,7 +16,7 @@ fn koilang_crate() -> proc_macro2::TokenStream {
     if pkg_name == "koilang" {
         quote!(crate)
     } else {
-        quote!(::koilang_rs)
+        quote!(::koilang)
     }
 }
 
@@ -64,14 +64,42 @@ fn has_command_attr(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| attr.path().is_ident("command"))
 }
 
+/// Check if a type is `&mut Runtime`.
+///
+/// This detects both:
+/// - `&mut Runtime` (simple path)
+/// - `&mut koilang::Runtime` or `&mut ::koilang::Runtime` (qualified path)
+fn is_runtime_type(ty: &Type) -> bool {
+    if let Type::Reference(TypeReference {
+        mutability: Some(_),
+        elem,
+        ..
+    }) = ty
+    {
+        if let Type::Path(type_path) = &**elem {
+            // Check if the last segment is "Runtime"
+            if let Some(segment) = type_path.path.segments.last() {
+                return segment.ident == "Runtime";
+            }
+        }
+    }
+    false
+}
+
 /// Generate argument extraction code for a function parameter.
 ///
 /// This generates code that converts a `Value` to the appropriate Rust type.
+/// Returns `Ok(None)` for Runtime parameters (they are injected, not extracted).
 fn generate_arg_extraction(
     pat: &Pat,
     ty: &Type,
     index: usize,
-) -> syn::Result<proc_macro2::TokenStream> {
+) -> syn::Result<Option<proc_macro2::TokenStream>> {
+    // Skip Runtime parameters - they are injected, not extracted from args
+    if is_runtime_type(ty) {
+        return Ok(None);
+    }
+
     let var_name = match pat {
         Pat::Ident(pat_ident) => &pat_ident.ident,
         _ => {
@@ -189,7 +217,7 @@ fn generate_arg_extraction(
         }
     };
 
-    Ok(extraction)
+    Ok(Some(extraction))
 }
 
 /// Attribute macro for marking a function as a command.
@@ -202,7 +230,7 @@ fn generate_arg_extraction(
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```rust
 /// #[command]
 /// fn greet(&mut self, name: String) { ... }
 ///
@@ -281,23 +309,36 @@ pub fn command_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
         let method_ident = &method.sig.ident;
         let cmd_name_lit = cmd_name;
 
-        // Generate argument extraction code for each parameter (skip &mut self)
+        // Analyze parameters and generate extraction/injection code
+        // Skip &mut self (first parameter), then process remaining parameters
         let mut arg_extractions = Vec::new();
-        let mut arg_names = Vec::new();
+        let mut arg_expressions = Vec::new();
+        let mut arg_index: usize = 0;
 
-        for (index, param) in method.sig.inputs.iter().enumerate().skip(1) {
+        for param in method.sig.inputs.iter().skip(1) {
             if let syn::FnArg::Typed(PatType { pat, ty, .. }) = param {
-                match generate_arg_extraction(pat, ty, index - 1) {
-                    Ok(extraction) => {
-                        arg_extractions.push(extraction);
+                // Check if this is a Runtime parameter
+                if is_runtime_type(ty) {
+                    // Inject runtime reference
+                    arg_expressions.push(quote!(runtime));
+                } else {
+                    // Generate extraction code for regular argument
+                    match generate_arg_extraction(pat, ty, arg_index) {
+                        Ok(Some(extraction)) => {
+                            arg_extractions.push(extraction);
+                            // Get the variable name for the method call
+                            if let Pat::Ident(pat_ident) = &**pat {
+                                let var_name = &pat_ident.ident;
+                                arg_expressions.push(quote!(#var_name));
+                            }
+                            arg_index += 1;
+                        }
+                        Ok(None) => {
+                            // Runtime type - should have been caught above, but handle just in case
+                            arg_expressions.push(quote!(runtime));
+                        }
+                        Err(e) => return e.to_compile_error().into(),
                     }
-                    Err(e) => return e.to_compile_error().into(),
-                }
-
-                // Get the variable name
-                if let Pat::Ident(pat_ident) = &**pat {
-                    let var_name = &pat_ident.ident;
-                    arg_names.push(quote!(#var_name));
                 }
             }
         }
@@ -306,7 +347,7 @@ pub fn command_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
         let match_arm = quote! {
             #cmd_name_lit => {
                 #(#arg_extractions)*
-                self.#method_ident(#(#arg_names),*);
+                self.#method_ident(#(#arg_expressions),*);
                 Ok(())
             }
         };
@@ -324,10 +365,11 @@ pub fn command_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 name: &str,
                 args: &[#koi::Value],
                 _kwargs: &::std::collections::HashMap<String, #koi::Value>,
+                runtime: &mut #koi::Runtime,
             ) -> #koi::Result<()> {
                 match name {
                     #(#match_arms)*
-                    _ => Err(#koi::KoiError::command_not_found(name, 0)),
+                    _ => Err(#koi::KoiError::command_not_found(name)),
                 }
             }
         }

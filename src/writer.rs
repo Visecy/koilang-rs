@@ -6,16 +6,15 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
-//! use koilang_rs::Writer;
-//! use koicore::writer::WriterConfig;
+//! ```rust
+//! use koilang::Writer;
+//! use std::collections::HashMap;
 //!
 //! let mut buffer = Vec::new();
 //! let mut writer = Writer::new(&mut buffer, None).unwrap();
 //!
 //! writer.command("hello", &["World".into()], &HashMap::new()).unwrap();
 //! writer.text("Some text content").unwrap();
-//! writer.close().unwrap();
 //! ```
 
 use crate::error::{KoiError, Result};
@@ -31,15 +30,16 @@ use std::io::Write;
 ///
 /// # Examples
 ///
-/// ```rust,ignore
-/// use koilang_rs::Writer;
+/// ```rust
+/// use koilang::Writer;
+/// use std::collections::HashMap;
 ///
 /// let mut buffer = Vec::new();
 /// let mut writer = Writer::new(&mut buffer, None).unwrap();
 ///
 /// writer.command("character", &["Alice".into(), "Hello!".into()], &HashMap::new()).unwrap();
 /// writer.text("This is narrative text.").unwrap();
-/// writer.close().unwrap();
+/// drop(writer);
 ///
 /// let output = String::from_utf8(buffer).unwrap();
 /// println!("{}", output);
@@ -58,17 +58,18 @@ pub struct Writer<W: Write> {
 /// or all commands written through the proxy.
 ///
 /// # Examples
-///
-/// ```rust,ignore
-/// use koilang_rs::Writer;
-/// use koicore::writer::FormatterOptions;
-///
-/// let mut buffer = Vec::new();
-/// let mut writer = Writer::new(&mut buffer, None).unwrap();
-///
-/// let opts = FormatterOptions::default();
-/// writer.with_options(opts, None).command("test", &[], &HashMap::new()).unwrap();
-/// ```
+    ///
+    /// ```rust
+    /// use koilang::Writer;
+    /// use koicore::writer::FormatterOptions;
+    /// use std::collections::HashMap;
+    ///
+    /// let mut buffer = Vec::new();
+    /// let mut writer = Writer::new(&mut buffer, None).unwrap();
+    ///
+    /// let opts = FormatterOptions::default();
+    /// writer.with_options(opts, None).command("test", &[], &HashMap::new()).unwrap();
+    /// ```
 pub struct OptionsProxy<'a, W: Write> {
     writer: &'a mut Writer<W>,
     options: FormatterOptions,
@@ -89,8 +90,8 @@ impl<W: Write> Writer<W> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
-    /// use koilang_rs::Writer;
+    /// ```rust
+    /// use koilang::Writer;
     ///
     /// let mut buffer = Vec::new();
     /// let mut writer = Writer::new(&mut buffer, None).unwrap();
@@ -123,7 +124,7 @@ impl<W: Write> Writer<W> {
     /// Returns `Ok(())` on success, or an error if writing fails.
     pub fn newline(&mut self) -> Result<()> {
         self.core_writer.newline().map_err(|e| {
-            KoiError::runtime(format!("Failed to write newline: {}", e), 0)
+            KoiError::runtime(format!("Failed to write newline: {}", e))
         })
     }
 
@@ -152,8 +153,9 @@ impl<W: Write> Writer<W> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
-    /// use koilang_rs::Writer;
+    /// ```rust
+    /// use koilang::Writer;
+    /// use std::collections::HashMap;
     ///
     /// let mut buffer = Vec::new();
     /// let mut writer = Writer::new(&mut buffer, None).unwrap();
@@ -185,9 +187,10 @@ impl<W: Write> Writer<W> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
-    /// use koilang_rs::Writer;
+    /// ```rust
+    /// use koilang::Writer;
     /// use koicore::writer::FormatterOptions;
+    /// use std::collections::HashMap;
     ///
     /// let mut buffer = Vec::new();
     /// let mut writer = Writer::new(&mut buffer, None).unwrap();
@@ -233,11 +236,11 @@ impl<W: Write> Writer<W> {
             self.core_writer
                 .write_command_with_options(command, Some(&opts), None)
                 .map_err(|e| {
-                    KoiError::runtime(format!("Failed to write command: {}", e), 0)
+                    KoiError::runtime(format!("Failed to write command: {}", e))
                 })?;
         } else {
             self.core_writer.write_command(command).map_err(|e| {
-                KoiError::runtime(format!("Failed to write command: {}", e), 0)
+                KoiError::runtime(format!("Failed to write command: {}", e))
             })?;
         }
 
@@ -258,8 +261,9 @@ impl<W: Write> Writer<W> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
-    /// use koilang_rs::Writer;
+    /// ```rust
+    /// use koilang::Writer;
+    /// use std::collections::HashMap;
     ///
     /// let mut buffer = Vec::new();
     /// let mut writer = Writer::new(&mut buffer, None).unwrap();
@@ -289,8 +293,8 @@ impl<W: Write> Writer<W> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
-    /// use koilang_rs::Writer;
+    /// ```rust
+    /// use koilang::Writer;
     ///
     /// let mut buffer = Vec::new();
     /// let mut writer = Writer::new(&mut buffer, None).unwrap();
@@ -314,8 +318,8 @@ impl<W: Write> Writer<W> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
-    /// use koilang_rs::Writer;
+    /// ```rust
+    /// use koilang::Writer;
     ///
     /// let mut buffer = Vec::new();
     /// let mut writer = Writer::new(&mut buffer, None).unwrap();
@@ -353,7 +357,7 @@ impl<'a, W: Write> OptionsProxy<'a, W> {
                 .core_writer
                 .write_command_with_options(&cmd, Some(&self.options), None)
                 .map_err(|e| {
-                    KoiError::runtime(format!("Failed to write command: {}", e), 0)
+                    KoiError::runtime(format!("Failed to write command: {}", e))
                 })?;
         } else {
             self.writer.command(name, args, kwargs)?;
@@ -376,7 +380,7 @@ impl<'a, W: Write> OptionsProxy<'a, W> {
             .core_writer
             .write_command_with_options(&cmd, Some(&self.options), None)
             .map_err(|e| {
-                KoiError::runtime(format!("Failed to write text: {}", e), 0)
+                KoiError::runtime(format!("Failed to write text: {}", e))
             })
     }
 
@@ -395,7 +399,7 @@ impl<'a, W: Write> OptionsProxy<'a, W> {
             .core_writer
             .write_command_with_options(&cmd, Some(&self.options), None)
             .map_err(|e| {
-                KoiError::runtime(format!("Failed to write annotation: {}", e), 0)
+                KoiError::runtime(format!("Failed to write annotation: {}", e))
             })
     }
 }
