@@ -400,4 +400,212 @@ mod tests {
         assert_eq!(cmds[0], "runtime_first: Test");
         assert!(*accessed.lock().unwrap());
     }
+
+    // Test strict type checking
+    struct StrictTypeTestEnv {
+        last_error: Arc<Mutex<Option<String>>>,
+    }
+
+    impl StrictTypeTestEnv {
+        fn new() -> (Self, Arc<Mutex<Option<String>>>) {
+            let last_error = Arc::new(Mutex::new(None));
+            (Self { last_error: last_error.clone() }, last_error)
+        }
+    }
+
+    #[command_handler]
+    impl StrictTypeTestEnv {
+        #[command]
+        fn take_int(&mut self, _value: i64) {
+            self.last_error.lock().unwrap().take();
+        }
+
+        #[command]
+        fn take_float(&mut self, _value: f64) {
+            self.last_error.lock().unwrap().take();
+        }
+
+        #[command]
+        fn take_bool(&mut self, _value: bool) {
+            self.last_error.lock().unwrap().take();
+        }
+
+        #[command]
+        fn take_string(&mut self, _value: String) {
+            self.last_error.lock().unwrap().take();
+        }
+    }
+
+    #[test]
+    fn test_strict_type_int_accepts_int() {
+        let mut runtime = Runtime::new();
+        let (env, _) = StrictTypeTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let result = runtime.execute_command("take_int", &[42i64.into()], &HashMap::new());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_strict_type_int_rejects_float() {
+        let mut runtime = Runtime::new();
+        let (env, _) = StrictTypeTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let result = runtime.execute_command("take_int", &[3.14f64.into()], &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type mismatch"));
+        assert!(err.to_string().contains("expected Int, got Float"));
+    }
+
+    #[test]
+    fn test_strict_type_int_rejects_string() {
+        let mut runtime = Runtime::new();
+        let (env, _) = StrictTypeTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let result = runtime.execute_command("take_int", &["hello".into()], &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type mismatch"));
+        assert!(err.to_string().contains("expected Int, got String"));
+    }
+
+    #[test]
+    fn test_strict_type_float_accepts_float() {
+        let mut runtime = Runtime::new();
+        let (env, _) = StrictTypeTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let result = runtime.execute_command("take_float", &[3.14f64.into()], &HashMap::new());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_strict_type_float_rejects_int_without_attribute() {
+        let mut runtime = Runtime::new();
+        let (env, _) = StrictTypeTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let result = runtime.execute_command("take_float", &[42i64.into()], &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type mismatch"));
+        assert!(err.to_string().contains("expected Float, got Int"));
+    }
+
+    #[test]
+    fn test_strict_type_float_rejects_string() {
+        let mut runtime = Runtime::new();
+        let (env, _) = StrictTypeTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let result = runtime.execute_command("take_float", &["hello".into()], &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type mismatch"));
+        assert!(err.to_string().contains("expected Float, got String"));
+    }
+
+    #[test]
+    fn test_strict_type_bool_accepts_bool() {
+        let mut runtime = Runtime::new();
+        let (env, _) = StrictTypeTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let result = runtime.execute_command("take_bool", &[true.into()], &HashMap::new());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_strict_type_bool_rejects_int() {
+        let mut runtime = Runtime::new();
+        let (env, _) = StrictTypeTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let result = runtime.execute_command("take_bool", &[1i64.into()], &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type mismatch"));
+        assert!(err.to_string().contains("expected Bool, got Int"));
+    }
+
+    #[test]
+    fn test_strict_type_string_accepts_string() {
+        let mut runtime = Runtime::new();
+        let (env, _) = StrictTypeTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let result = runtime.execute_command("take_string", &["hello".into()], &HashMap::new());
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_strict_type_string_rejects_int() {
+        let mut runtime = Runtime::new();
+        let (env, _) = StrictTypeTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let result = runtime.execute_command("take_string", &[42i64.into()], &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type mismatch"));
+        assert!(err.to_string().contains("expected String, got Int"));
+    }
+
+    // Test allow_int_to_float option in command attribute
+    struct AllowIntToFloatTestEnv {
+        received_value: Arc<Mutex<Option<f64>>>,
+    }
+
+    impl AllowIntToFloatTestEnv {
+        fn new() -> (Self, Arc<Mutex<Option<f64>>>) {
+            let received_value = Arc::new(Mutex::new(None));
+            (Self { received_value: received_value.clone() }, received_value)
+        }
+    }
+
+    #[command_handler]
+    impl AllowIntToFloatTestEnv {
+        #[command(allow_int_to_float)]
+        fn take_float_with_int(&mut self, value: f64) {
+            *self.received_value.lock().unwrap() = Some(value);
+        }
+    }
+
+    #[test]
+    fn test_allow_int_to_float_accepts_int() {
+        let mut runtime = Runtime::new();
+        let (env, received) = AllowIntToFloatTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let result = runtime.execute_command("take_float_with_int", &[42i64.into()], &HashMap::new());
+        assert!(result.is_ok());
+        assert_eq!(*received.lock().unwrap(), Some(42.0));
+    }
+
+    #[test]
+    fn test_allow_int_to_float_accepts_float() {
+        let mut runtime = Runtime::new();
+        let (env, received) = AllowIntToFloatTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let result = runtime.execute_command("take_float_with_int", &[3.14f64.into()], &HashMap::new());
+        assert!(result.is_ok());
+        assert_eq!(*received.lock().unwrap(), Some(3.14));
+    }
+
+    #[test]
+    fn test_allow_int_to_float_rejects_string() {
+        let mut runtime = Runtime::new();
+        let (env, _) = AllowIntToFloatTestEnv::new();
+        runtime.env_enter(Box::new(env));
+
+        let result = runtime.execute_command("take_float_with_int", &["hello".into()], &HashMap::new());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("type mismatch"));
+        assert!(err.to_string().contains("expected Float, got String"));
+    }
 }
