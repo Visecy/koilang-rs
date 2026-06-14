@@ -8,6 +8,7 @@ use crate::handler::CommandHandler;
 use koicore::command::{Command, Value};
 use koicore::parser::{FileInputSource, Parser, ParserConfig, StringInputSource, TextInputSource};
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::path::Path;
 
 /// Type alias for middleware functions.
@@ -186,8 +187,13 @@ impl Runtime {
         for pos in self.current_position + 1..self.command_cache.len() {
             let cmd = &self.command_cache[pos];
             if strategy(cmd, pos) {
-                let target = (pos as i32 + offset) as usize;
-                return self.jump_to_position(target);
+                let target = pos as i64 + offset as i64;
+                if target < 0 || target as usize >= self.command_cache.len() {
+                    return Err(KoiError::runtime(
+                        format!("Jump target position {} out of bounds (0..{})", target, self.command_cache.len()),
+                    ));
+                }
+                return self.jump_to_position(target as usize);
             }
         }
 
