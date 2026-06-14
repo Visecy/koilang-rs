@@ -51,7 +51,7 @@
 //! ## Manual CommandHandler Implementation
 //!
 //! ```rust
-//! use koilang::{Runtime, CommandHandler, Result};
+//! use koilang::{Runtime, CommandHandler, DispatchResult, KoiError};
 //! use koicore::command::Value;
 //! use std::collections::HashMap;
 //!
@@ -64,7 +64,7 @@
 //!         args: &[Value],
 //!         _kwargs: &HashMap<String, Value>,
 //!         _runtime: &mut Runtime,
-//!     ) -> Result<()> {
+//!     ) -> DispatchResult {
 //!         match name {
 //!             "greet" => {
 //!                 let name = args.get(0)
@@ -74,9 +74,9 @@
 //!                     })
 //!                     .unwrap_or("World");
 //!                 println!("Hello, {}!", name);
-//!                 Ok(())
+//!                 DispatchResult::Continue
 //!             }
-//!             _ => Err(koilang::KoiError::command_not_found(name)),
+//!             _ => DispatchResult::Error(KoiError::command_not_found(name)),
 //!         }
 //!     }
 //! }
@@ -128,7 +128,7 @@ mod runtime;
 mod writer;
 
 // Public exports
-pub use error::{KoiError, Result};
+pub use error::{DispatchResult, KoiError, Result};
 pub use handler::CommandHandler;
 pub use runtime::{Runtime, MiddlewareFn, CommandBuilder};
 pub use writer::{Writer, OptionsProxy};
@@ -158,9 +158,9 @@ mod tests {
             _args: &[Value],
             _kwargs: &HashMap<String, Value>,
             _runtime: &mut Runtime,
-        ) -> Result<()> {
+        ) -> DispatchResult {
             self.commands.push(name.to_string());
-            Ok(())
+            DispatchResult::Continue
         }
     }
 
@@ -174,7 +174,7 @@ mod tests {
         runtime.execute_str(r#"#test_command"#).unwrap();
 
         // Test execute_command
-        runtime.execute_command("another_command", &[], &HashMap::new()).unwrap();
+        let _ = runtime.execute_command("another_command", &[], &HashMap::new());
     }
 
     // Test macro-generated CommandHandler
@@ -234,7 +234,7 @@ mod tests {
         let (env, commands, last_name) = MacroTestEnv::new();
         runtime.env_enter(Box::new(env));
 
-        runtime.execute_command("greet", &["Alice".into()], &HashMap::new()).unwrap();
+        assert!(matches!(runtime.execute_command("greet", &["Alice".into()], &HashMap::new()), DispatchResult::Continue));
         
         let cmds = commands.lock().unwrap();
         assert_eq!(cmds.len(), 1);
@@ -248,7 +248,7 @@ mod tests {
         let (env, commands, _) = MacroTestEnv::new();
         runtime.env_enter(Box::new(env));
 
-        runtime.execute_command("say_hello", &[], &HashMap::new()).unwrap();
+        assert!(matches!(runtime.execute_command("say_hello", &[], &HashMap::new()), DispatchResult::Continue));
         
         let cmds = commands.lock().unwrap();
         assert_eq!(cmds.len(), 1);
@@ -275,7 +275,7 @@ mod tests {
         let (env, commands, _) = MacroTestEnv::new();
         runtime.env_enter(Box::new(env));
 
-        runtime.execute_command("@text", &["Hello World".into()], &HashMap::new()).unwrap();
+        assert!(matches!(runtime.execute_command("@text", &["Hello World".into()], &HashMap::new()), DispatchResult::Continue));
         
         let cmds = commands.lock().unwrap();
         assert_eq!(cmds.len(), 1);
@@ -288,7 +288,7 @@ mod tests {
         let (env, commands, _) = MacroTestEnv::new();
         runtime.env_enter(Box::new(env));
 
-        runtime.execute_command("@annotation", &["note".into()], &HashMap::new()).unwrap();
+        assert!(matches!(runtime.execute_command("@annotation", &["note".into()], &HashMap::new()), DispatchResult::Continue));
         
         let cmds = commands.lock().unwrap();
         assert_eq!(cmds.len(), 1);
@@ -352,7 +352,7 @@ mod tests {
         let (env, commands, accessed) = RuntimeInjectionTestEnv::new();
         runtime.env_enter(Box::new(env));
 
-        runtime.execute_command("with_runtime", &[], &HashMap::new()).unwrap();
+        assert!(matches!(runtime.execute_command("with_runtime", &[], &HashMap::new()), DispatchResult::Continue));
         
         let cmds = commands.lock().unwrap();
         assert_eq!(cmds.len(), 1);
@@ -366,7 +366,7 @@ mod tests {
         let (env, commands, accessed) = RuntimeInjectionTestEnv::new();
         runtime.env_enter(Box::new(env));
 
-        runtime.execute_command("runtime_and_args", &["Alice".into(), 42i64.into()], &HashMap::new()).unwrap();
+        assert!(matches!(runtime.execute_command("runtime_and_args", &["Alice".into(), 42i64.into()], &HashMap::new()), DispatchResult::Continue));
         
         let cmds = commands.lock().unwrap();
         assert_eq!(cmds.len(), 1);
@@ -380,7 +380,7 @@ mod tests {
         let (env, commands, _) = RuntimeInjectionTestEnv::new();
         runtime.env_enter(Box::new(env));
 
-        runtime.execute_command("without_runtime", &["Bob".into()], &HashMap::new()).unwrap();
+        assert!(matches!(runtime.execute_command("without_runtime", &["Bob".into()], &HashMap::new()), DispatchResult::Continue));
         
         let cmds = commands.lock().unwrap();
         assert_eq!(cmds.len(), 1);
@@ -393,7 +393,7 @@ mod tests {
         let (env, commands, accessed) = RuntimeInjectionTestEnv::new();
         runtime.env_enter(Box::new(env));
 
-        runtime.execute_command("runtime_first", &["Test".into()], &HashMap::new()).unwrap();
+        assert!(matches!(runtime.execute_command("runtime_first", &["Test".into()], &HashMap::new()), DispatchResult::Continue));
         
         let cmds = commands.lock().unwrap();
         assert_eq!(cmds.len(), 1);
@@ -443,7 +443,7 @@ mod tests {
         runtime.env_enter(Box::new(env));
 
         let result = runtime.execute_command("take_int", &[42i64.into()], &HashMap::new());
-        assert!(result.is_ok());
+        assert!(matches!(result, DispatchResult::Continue));
     }
 
     #[test]
@@ -453,10 +453,11 @@ mod tests {
         runtime.env_enter(Box::new(env));
 
         let result = runtime.execute_command("take_int", &[3.14f64.into()], &HashMap::new());
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("type mismatch"));
-        assert!(err.to_string().contains("expected Int, got Float"));
+        assert!(matches!(result, DispatchResult::Error(_)));
+        if let DispatchResult::Error(err) = result {
+            assert!(err.to_string().contains("type mismatch"));
+            assert!(err.to_string().contains("expected Int, got Float"));
+        }
     }
 
     #[test]
@@ -466,10 +467,11 @@ mod tests {
         runtime.env_enter(Box::new(env));
 
         let result = runtime.execute_command("take_int", &["hello".into()], &HashMap::new());
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("type mismatch"));
-        assert!(err.to_string().contains("expected Int, got String"));
+        assert!(matches!(result, DispatchResult::Error(_)));
+        if let DispatchResult::Error(err) = result {
+            assert!(err.to_string().contains("type mismatch"));
+            assert!(err.to_string().contains("expected Int, got String"));
+        }
     }
 
     #[test]
@@ -479,7 +481,7 @@ mod tests {
         runtime.env_enter(Box::new(env));
 
         let result = runtime.execute_command("take_float", &[3.14f64.into()], &HashMap::new());
-        assert!(result.is_ok());
+        assert!(matches!(result, DispatchResult::Continue));
     }
 
     #[test]
@@ -489,10 +491,11 @@ mod tests {
         runtime.env_enter(Box::new(env));
 
         let result = runtime.execute_command("take_float", &[42i64.into()], &HashMap::new());
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("type mismatch"));
-        assert!(err.to_string().contains("expected Float, got Int"));
+        assert!(matches!(result, DispatchResult::Error(_)));
+        if let DispatchResult::Error(err) = result {
+            assert!(err.to_string().contains("type mismatch"));
+            assert!(err.to_string().contains("expected Float, got Int"));
+        }
     }
 
     #[test]
@@ -502,10 +505,11 @@ mod tests {
         runtime.env_enter(Box::new(env));
 
         let result = runtime.execute_command("take_float", &["hello".into()], &HashMap::new());
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("type mismatch"));
-        assert!(err.to_string().contains("expected Float, got String"));
+        assert!(matches!(result, DispatchResult::Error(_)));
+        if let DispatchResult::Error(err) = result {
+            assert!(err.to_string().contains("type mismatch"));
+            assert!(err.to_string().contains("expected Float, got String"));
+        }
     }
 
     #[test]
@@ -515,7 +519,7 @@ mod tests {
         runtime.env_enter(Box::new(env));
 
         let result = runtime.execute_command("take_bool", &[true.into()], &HashMap::new());
-        assert!(result.is_ok());
+        assert!(matches!(result, DispatchResult::Continue));
     }
 
     #[test]
@@ -525,10 +529,11 @@ mod tests {
         runtime.env_enter(Box::new(env));
 
         let result = runtime.execute_command("take_bool", &[1i64.into()], &HashMap::new());
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("type mismatch"));
-        assert!(err.to_string().contains("expected Bool, got Int"));
+        assert!(matches!(result, DispatchResult::Error(_)));
+        if let DispatchResult::Error(err) = result {
+            assert!(err.to_string().contains("type mismatch"));
+            assert!(err.to_string().contains("expected Bool, got Int"));
+        }
     }
 
     #[test]
@@ -538,7 +543,7 @@ mod tests {
         runtime.env_enter(Box::new(env));
 
         let result = runtime.execute_command("take_string", &["hello".into()], &HashMap::new());
-        assert!(result.is_ok());
+        assert!(matches!(result, DispatchResult::Continue));
     }
 
     #[test]
@@ -548,10 +553,11 @@ mod tests {
         runtime.env_enter(Box::new(env));
 
         let result = runtime.execute_command("take_string", &[42i64.into()], &HashMap::new());
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("type mismatch"));
-        assert!(err.to_string().contains("expected String, got Int"));
+        assert!(matches!(result, DispatchResult::Error(_)));
+        if let DispatchResult::Error(err) = result {
+            assert!(err.to_string().contains("type mismatch"));
+            assert!(err.to_string().contains("expected String, got Int"));
+        }
     }
 
     // Test allow_int_to_float option in command attribute
@@ -581,7 +587,7 @@ mod tests {
         runtime.env_enter(Box::new(env));
 
         let result = runtime.execute_command("take_float_with_int", &[42i64.into()], &HashMap::new());
-        assert!(result.is_ok());
+        assert!(matches!(result, DispatchResult::Continue));
         assert_eq!(*received.lock().unwrap(), Some(42.0));
     }
 
@@ -592,7 +598,7 @@ mod tests {
         runtime.env_enter(Box::new(env));
 
         let result = runtime.execute_command("take_float_with_int", &[3.14f64.into()], &HashMap::new());
-        assert!(result.is_ok());
+        assert!(matches!(result, DispatchResult::Continue));
         assert_eq!(*received.lock().unwrap(), Some(3.14));
     }
 
@@ -603,9 +609,10 @@ mod tests {
         runtime.env_enter(Box::new(env));
 
         let result = runtime.execute_command("take_float_with_int", &["hello".into()], &HashMap::new());
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("type mismatch"));
-        assert!(err.to_string().contains("expected Float, got String"));
+        assert!(matches!(result, DispatchResult::Error(_)));
+        if let DispatchResult::Error(err) = result {
+            assert!(err.to_string().contains("type mismatch"));
+            assert!(err.to_string().contains("expected Float, got String"));
+        }
     }
 }

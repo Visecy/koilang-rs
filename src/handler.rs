@@ -8,7 +8,7 @@
 //! ## Manual Implementation
 //!
 //! ```rust
-//! use koilang::{CommandHandler, Runtime, Result};
+//! use koilang::{CommandHandler, Runtime, DispatchResult, KoiError};
 //! use koicore::command::Value;
 //! use std::collections::HashMap;
 //!
@@ -23,20 +23,20 @@
 //!         args: &[Value],
 //!         _kwargs: &HashMap<String, Value>,
 //!         _runtime: &mut Runtime,
-//!     ) -> Result<()> {
+//!     ) -> DispatchResult {
 //!         match name {
 //!             "increment" => {
 //!                 self.counter += 1;
 //!                 println!("Counter: {}", self.counter);
-//!                 Ok(())
+//!                 DispatchResult::Continue
 //!             }
 //!             "@start" => {
 //!                 println!("Environment started");
-//!                 Ok(())
+//!                 DispatchResult::Continue
 //!             }
 //!             "@end" => {
 //!                 println!("Environment ended");
-//!                 Ok(())
+//!                 DispatchResult::Continue
 //!             }
 //!             "@text" => {
 //!                 let content = args.get(0)
@@ -46,15 +46,15 @@
 //!                     })
 //!                     .unwrap_or("");
 //!                 println!("Text: {}", content);
-//!                 Ok(())
+//!                 DispatchResult::Continue
 //!             }
-//!             _ => Err(koilang::KoiError::command_not_found(name)),
+//!             _ => DispatchResult::Error(koilang::KoiError::command_not_found(name)),
 //!         }
 //!     }
 //! }
 //! ```
 
-use crate::error::Result;
+use crate::error::DispatchResult;
 use crate::runtime::Runtime;
 use koicore::command::Value;
 use std::collections::HashMap;
@@ -93,20 +93,20 @@ pub trait CommandHandler: Send + 'static {
     ///
     /// # Returns
     ///
-    /// Returns `Ok(())` if the command was handled successfully, or an error
-    /// if something went wrong.
+    /// Returns `Continue(())` if the command was handled normally,
+    /// or a `Break` with the appropriate control flow signal (jump, probe, or error).
     ///
     /// # Examples
     ///
     /// ```rust,ignore
-    /// fn handle_command(&mut self, name: &str, args: &[Value], kwargs: &HashMap<String, Value>, runtime: &mut Runtime) -> Result<()> {
+    /// fn handle_command(&mut self, name: &str, args: &[Value], kwargs: &HashMap<String, Value>, runtime: &mut Runtime) -> DispatchResult {
     ///     match name {
     ///         "greet" => {
     ///             let name = args.get(0).and_then(|v| v.as_string()).unwrap_or("World");
     ///             println!("Hello, {}!", name);
-    ///             Ok(())
+    ///             DispatchResult::Continue
     ///         }
-    ///         _ => Err(KoiError::command_not_found(name))
+    ///         _ => DispatchResult::Error(KoiError::command_not_found(name))
     ///     }
     /// }
     /// ```
@@ -116,7 +116,7 @@ pub trait CommandHandler: Send + 'static {
         args: &[Value],
         kwargs: &HashMap<String, Value>,
         runtime: &mut Runtime,
-    ) -> Result<()>;
+    ) -> DispatchResult;
 }
 
 /// Helper function to convert arguments to a command handler call.
@@ -129,7 +129,7 @@ pub(crate) fn dispatch_to_handler(
     args: &[Value],
     kwargs: &HashMap<String, Value>,
     runtime: &mut Runtime,
-) -> Result<()> {
+) -> DispatchResult {
     handler.handle_command(name, args, kwargs, runtime)
 }
 
@@ -149,12 +149,12 @@ mod tests {
             _args: &[Value],
             _kwargs: &HashMap<String, Value>,
             _runtime: &mut Runtime,
-        ) -> Result<()> {
+        ) -> DispatchResult {
             self.last_command = Some(name.to_string());
             if name == "fail" {
-                Err(KoiError::runtime("test failure"))
+                DispatchResult::Error(KoiError::runtime("test failure"))
             } else {
-                Ok(())
+                DispatchResult::Continue
             }
         }
     }
@@ -163,8 +163,9 @@ mod tests {
     fn test_handler_dispatch() {
         let mut handler = TestHandler { last_command: None };
         let mut runtime = Runtime::new();
-        
-        dispatch_to_handler(&mut handler, "test", &[], &HashMap::new(), &mut runtime).unwrap();
+
+        let result = dispatch_to_handler(&mut handler, "test", &[], &HashMap::new(), &mut runtime);
+        assert!(matches!(result, DispatchResult::Continue));
         assert_eq!(handler.last_command, Some("test".to_string()));
     }
 
@@ -172,8 +173,8 @@ mod tests {
     fn test_handler_error() {
         let mut handler = TestHandler { last_command: None };
         let mut runtime = Runtime::new();
-        
+
         let result = dispatch_to_handler(&mut handler, "fail", &[], &HashMap::new(), &mut runtime);
-        assert!(result.is_err());
+        assert!(matches!(result, DispatchResult::Error(_)));
     }
 }

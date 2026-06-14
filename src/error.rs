@@ -1,6 +1,8 @@
 //! Error types for KoiLang runtime operations.
 
 use std::io;
+
+use koicore::command::Command;
 use thiserror::Error;
 
 /// Main error type for KoiLang runtime operations.
@@ -20,14 +22,6 @@ pub enum KoiError {
         name: String,
     },
 
-    /// Jump request for control flow.
-    /// This is not a real error but a control flow mechanism.
-    #[error("Jump to position {position}")]
-    JumpRequest {
-        /// Target position to jump to.
-        position: usize,
-    },
-
     /// Parse error from koicore.
     #[error("Parse error: {0}")]
     Parse(#[from] koicore::parser::ParseError),
@@ -35,6 +29,24 @@ pub enum KoiError {
     /// IO error.
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
+}
+
+/// Result of command dispatch.
+///
+/// Represents the possible outcomes from dispatching a command:
+/// normal continuation, a jump, a cache probe request, or an error.
+pub enum DispatchResult<E = KoiError> {
+    /// Continue normal execution, advance to next command.
+    Continue,
+    /// Jump to a specific position in the command cache.
+    Jump(usize),
+    /// Need more commands in cache before proceeding.
+    ProbeNeeded {
+        strategy: Box<dyn FnMut(&Command, usize) -> bool>,
+        offset: i32,
+    },
+    /// An error occurred.
+    Error(E),
 }
 
 impl KoiError {
@@ -49,24 +61,6 @@ impl KoiError {
     pub fn command_not_found(name: impl Into<String>) -> Self {
         Self::CommandNotFound {
             name: name.into(),
-        }
-    }
-
-    /// Create a new jump request.
-    pub fn jump_request(position: usize) -> Self {
-        Self::JumpRequest { position }
-    }
-
-    /// Check if this error is a jump request.
-    pub fn is_jump_request(&self) -> bool {
-        matches!(self, Self::JumpRequest { .. })
-    }
-
-    /// Get the jump position if this is a jump request.
-    pub fn jump_position(&self) -> Option<usize> {
-        match self {
-            Self::JumpRequest { position } => Some(*position),
-            _ => None,
         }
     }
 
@@ -91,12 +85,5 @@ mod tests {
         assert!(
             matches!(err, KoiError::CommandNotFound { name } if name == "test_cmd")
         );
-    }
-
-    #[test]
-    fn test_jump_request() {
-        let err = KoiError::jump_request(42);
-        assert!(err.is_jump_request());
-        assert_eq!(err.jump_position(), Some(42));
     }
 }

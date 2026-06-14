@@ -178,7 +178,7 @@ fn generate_arg_extraction(
                             koicore::command::Value::String(_) => "String",
                             koicore::command::Value::Bool(_) => "Bool",
                         };
-                        return Err(#koi::KoiError::runtime(
+                        return #koi::DispatchResult::Error(#koi::KoiError::runtime(
                             format!("type mismatch for argument {}: expected String, got {}", #index, type_name)
                         ));
                     }
@@ -199,7 +199,7 @@ fn generate_arg_extraction(
                                     koicore::command::Value::String(_) => "String",
                                     koicore::command::Value::Bool(_) => "Bool",
                                 };
-                                return Err(#koi::KoiError::runtime(
+                                return #koi::DispatchResult::Error(#koi::KoiError::runtime(
                                     format!("type mismatch for argument {}: expected String, got {}", #index, type_name)
                                 ));
                             }
@@ -233,7 +233,7 @@ fn generate_arg_extraction(
                                     koicore::command::Value::String(_) => "String",
                                     koicore::command::Value::Bool(_) => "Bool",
                                 };
-                                return Err(#koi::KoiError::runtime(
+                                return #koi::DispatchResult::Error(#koi::KoiError::runtime(
                                     format!("type mismatch for argument {}: expected Int, got {}", #index, type_name)
                                 ));
                             }
@@ -254,7 +254,7 @@ fn generate_arg_extraction(
                                         koicore::command::Value::String(_) => "String",
                                         koicore::command::Value::Bool(_) => "Bool",
                                     };
-                                    return Err(#koi::KoiError::runtime(
+                                    return #koi::DispatchResult::Error(#koi::KoiError::runtime(
                                         format!("type mismatch for argument {}: expected Float, got {}", #index, type_name)
                                     ));
                                 }
@@ -272,7 +272,7 @@ fn generate_arg_extraction(
                                         koicore::command::Value::String(_) => "String",
                                         koicore::command::Value::Bool(_) => "Bool",
                                     };
-                                    return Err(#koi::KoiError::runtime(
+                                    return #koi::DispatchResult::Error(#koi::KoiError::runtime(
                                         format!("type mismatch for argument {}: expected Float, got {}", #index, type_name)
                                     ));
                                 }
@@ -292,7 +292,7 @@ fn generate_arg_extraction(
                                     koicore::command::Value::String(_) => "String",
                                     koicore::command::Value::Bool(_) => "Bool",
                                 };
-                                return Err(#koi::KoiError::runtime(
+                                return #koi::DispatchResult::Error(#koi::KoiError::runtime(
                                     format!("type mismatch for argument {}: expected Bool, got {}", #index, type_name)
                                 ));
                             }
@@ -434,7 +434,7 @@ pub fn command_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
             #cmd_name_lit => {
                 #(#arg_extractions)*
                 self.#method_ident(#(#arg_expressions),*);
-                Ok(())
+                #koi::DispatchResult::Continue
             }
         };
 
@@ -451,10 +451,10 @@ pub fn command_handler(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 args: &[#koi::Value],
                 _kwargs: &::std::collections::HashMap<String, #koi::Value>,
                 runtime: &mut #koi::Runtime,
-            ) -> #koi::Result<()> {
+            ) -> #koi::DispatchResult {
                 match name {
                     #(#match_arms)*
-                    _ => Err(#koi::KoiError::command_not_found(name)),
+                    _ => #koi::DispatchResult::Error(#koi::KoiError::command_not_found(name)),
                 }
             }
         }

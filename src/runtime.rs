@@ -3,12 +3,11 @@
 //! This module provides the [`Runtime`] struct which orchestrates KoiLang script execution,
 //! including environment stack management, middleware support, command caching, and jump operations.
 
-use crate::error::{KoiError, Result};
+use crate::error::{DispatchResult, KoiError, Result};
 use crate::handler::CommandHandler;
 use koicore::command::{Command, Value};
 use koicore::parser::{FileInputSource, Parser, ParserConfig, StringInputSource, TextInputSource};
 use std::collections::HashMap;
-use std::ops::ControlFlow;
 use std::path::Path;
 
 /// Type alias for middleware functions.
@@ -141,15 +140,15 @@ impl Runtime {
 
     /// Jump to a specific position in the command cache.
     ///
-    /// This returns a `JumpRequest` error which is handled by the execution loop.
-    pub fn jump_to_position(&self, position: usize) -> Result<()> {
+    /// This returns a `DispatchResult::Jump` signal which is handled by the execution loop.
+    pub fn jump_to_position(&self, position: usize) -> DispatchResult {
         if !self.cache_enabled {
-            return Err(KoiError::runtime(
+            return DispatchResult::Error(KoiError::runtime(
                 "Cache must be enabled for jumps",
             ));
         }
 
-        Err(KoiError::JumpRequest { position })
+        DispatchResult::Jump(position)
     }
 
     /// Jump to a registered label.
@@ -157,10 +156,10 @@ impl Runtime {
     /// # Arguments
     ///
     /// * `label` - The label name to jump to
-    pub fn jump_to_label(&self, label: &str) -> Result<()> {
+    pub fn jump_to_label(&self, label: &str) -> DispatchResult {
         match self.label_index.get(label) {
             Some(&pos) => self.jump_to_position(pos),
-            None => Err(KoiError::runtime(
+            None => DispatchResult::Error(KoiError::runtime(
                 format!("Label '{}' not found", label),
             )),
         }
@@ -172,47 +171,50 @@ impl Runtime {
     ///
     /// * `strategy` - Function that returns true when the target is found
     /// * `offset` - Offset to apply to the found position
-    pub fn scan_and_jump<F>(&mut self, mut strategy: F, offset: i32) -> Result<()>
+    pub fn scan_and_jump<F>(&mut self, mut strategy: F, offset: i32) -> DispatchResult
     where
-        F: FnMut(&Command, usize) -> bool,
+        F: FnMut(&Command, usize) -> bool + 'static,
     {
         if !self.cache_enabled {
-            return Err(KoiError::runtime(
+            return DispatchResult::Error(KoiError::runtime(
                 "Cache must be enabled for scan_and_jump",
             ));
         }
 
-        // This is a simplified implementation
-        // In practice, we'd need to parse more commands as needed
         for pos in self.current_position + 1..self.command_cache.len() {
             let cmd = &self.command_cache[pos];
             if strategy(cmd, pos) {
                 let target = pos as i64 + offset as i64;
                 if target < 0 || target as usize >= self.command_cache.len() {
-                    return Err(KoiError::runtime(
+                    return DispatchResult::Error(KoiError::runtime(
                         format!("Jump target position {} out of bounds (0..{})", target, self.command_cache.len()),
                     ));
                 }
-                return self.jump_to_position(target as usize);
+                return DispatchResult::Jump(target as usize);
             }
         }
 
-        Err(KoiError::runtime("Jump target not found"))
+        DispatchResult::ProbeNeeded { strategy: Box::new(strategy), offset }
     }
 
     /// Probe (fill cache) until a condition is met, without jumping.
-    pub fn probe_until<F>(&mut self, _strategy: F) -> Result<()>
+    pub fn probe_until<F>(&mut self, mut strategy: F) -> DispatchResult
     where
-        F: FnMut(&Command, usize) -> bool,
+        F: FnMut(&Command, usize) -> bool + 'static,
     {
         if !self.cache_enabled {
-            return Err(KoiError::runtime(
-                "Cache must be enabled for probe_until",
-            ));
+            return DispatchResult::Error(
+                KoiError::runtime("Cache must be enabled for probe_until"),
+            );
         }
 
-        // Simplified implementation
-        Ok(())
+        for pos in self.current_position + 1..self.command_cache.len() {
+            if strategy(&self.command_cache[pos], pos) {
+                return DispatchResult::Continue;
+            }
+        }
+
+        DispatchResult::ProbeNeeded { strategy: Box::new(strategy), offset: 0 }
     }
 
     /// Jump to a matching end marker, tracking nesting depth.
@@ -229,11 +231,14 @@ impl Runtime {
         end: &str,
         alternative: Option<&str>,
         offset: i32,
-    ) -> Result<()> {
+    ) -> DispatchResult {
+        let start = start.to_string();
+        let end = end.to_string();
+        let alternative = alternative.map(|s| s.to_string());
         let mut depth = 1i32;
 
         self.scan_and_jump(
-            |cmd, _| {
+            move |cmd, _| {
                 let name = cmd.name();
                 if name == start {
                     depth += 1;
@@ -243,7 +248,7 @@ impl Runtime {
                         return true;
                     }
                 } else if depth == 1 {
-                    if let Some(alt) = alternative {
+                    if let Some(ref alt) = alternative {
                         if name == alt {
                             return true;
                         }
@@ -288,7 +293,7 @@ impl Runtime {
     }
 
     /// Execute a command, searching the environment stack.
-    fn execute_command_internal(&mut self, cmd: &Command) -> Result<()> {
+    fn execute_command_internal(&mut self, cmd: &Command) -> DispatchResult {
         let name = cmd.name();
         let args: Vec<Value> = cmd.params().iter().filter_map(|p| {
             match p {
@@ -307,22 +312,22 @@ impl Runtime {
             // and the environment stack iteration doesn't overlap with runtime usage
             let runtime_ref = unsafe { &mut *runtime_ptr };
             match env.handle_command(&name, &args, &kwargs, runtime_ref) {
-                Ok(()) => return Ok(()),
-                Err(KoiError::CommandNotFound { .. }) => continue,
-                Err(e) => return Err(e),
+                DispatchResult::Continue => return DispatchResult::Continue,
+                DispatchResult::Error(KoiError::CommandNotFound { .. }) => continue,
+                other => return other,
             }
         }
 
         // Special case: @annotation is silently ignored if not handled
         if name == "@annotation" {
-            return Ok(());
+            return DispatchResult::Continue;
         }
 
-        Err(KoiError::command_not_found(name))
+        DispatchResult::Error(KoiError::command_not_found(name))
     }
 
     /// Dispatch a command through the middleware chain.
-    fn dispatch(&mut self, cmd: &Command) -> Result<()> {
+    fn dispatch(&mut self, cmd: &Command) -> DispatchResult {
         // For simplicity, execute directly without middleware chain for now
         // A full implementation would build a proper middleware chain
         self.execute_command_internal(cmd)
@@ -334,7 +339,7 @@ impl Runtime {
         name: &str,
         args: &[Value],
         _kwargs: &HashMap<String, Value>,
-    ) -> Result<()> {
+    ) -> DispatchResult {
         // Create a temporary command
         use koicore::command::Parameter;
         let params: Vec<Parameter> = args.iter().cloned().map(Parameter::from).collect();
@@ -422,16 +427,43 @@ impl Runtime {
 
             // Dispatch the command
             match self.dispatch(&cmd) {
-                Ok(()) => {}
-                Err(KoiError::JumpRequest { position }) => {
-                    self.current_position = position;
-                    continue; // Continue from the new position
+                DispatchResult::Continue => {
+                    self.current_position += 1;
                 }
-                Err(e) => return Err(e),
+                DispatchResult::Jump(position) => {
+                    self.current_position = position;
+                }
+                DispatchResult::ProbeNeeded { mut strategy, offset } => {
+                    // Fill cache from parser until strategy matches or EOF
+                    loop {
+                        match parser.next_command() {
+                            Ok(Some(cmd)) => {
+                                self.command_cache.push(cmd);
+                                let pos = self.command_cache.len() - 1;
+                                if strategy(&self.command_cache[pos], pos) {
+                                    let target = pos as i64 + offset as i64;
+                                    if target < 0 || target as usize >= self.command_cache.len() {
+                                        return Err(KoiError::runtime(format!(
+                                            "Jump target position {} out of bounds (0..{})",
+                                            target, self.command_cache.len()
+                                        )));
+                                    }
+                                    self.current_position = target as usize;
+                                    break;
+                                }
+                                // Strategy not matched, continue filling cache
+                            }
+                            Ok(None) => {
+                                return Err(KoiError::runtime(
+                                    "Jump target not found: end of input"
+                                ));
+                            }
+                            Err(e) => return Err(KoiError::Parse(*e)),
+                        }
+                    }
+                }
+                DispatchResult::Error(e) => return Err(e),
             }
-
-            // Move to next position
-            self.current_position += 1;
         }
 
         Ok(())
@@ -521,7 +553,7 @@ impl Runtime {
         name: &str,
         args: &[Value],
         kwargs: &HashMap<String, Value>,
-    ) -> Result<()> {
+    ) -> DispatchResult {
         self.dispatch_args(name, args, kwargs)
     }
 
@@ -544,7 +576,7 @@ impl Runtime {
     /// let cmd = Command::new("greet", vec!["World".into()]);
     /// runtime.execute_command_obj(&cmd).unwrap();
     /// ```
-    pub fn execute_command_obj(&mut self, cmd: &Command) -> Result<()> {
+    pub fn execute_command_obj(&mut self, cmd: &Command) -> DispatchResult {
         self.dispatch(cmd)
     }
 
@@ -572,13 +604,13 @@ impl Runtime {
         name: &str,
         args: &[Value],
         kwargs: &HashMap<String, Value>,
-    ) -> Result<()> {
+    ) -> DispatchResult {
         if index >= self.env_stack.len() {
-            return Err(KoiError::runtime(
+            return DispatchResult::Error(KoiError::runtime(
                 format!("Environment index {} out of bounds", index),
             ));
         }
-        
+
         // Use raw pointer to work around borrow checker
         let runtime_ptr = self as *mut Runtime;
         let env = &mut self.env_stack[index];
@@ -687,7 +719,7 @@ impl<'a> CommandBuilder<'a> {
     /// # Returns
     ///
     /// Returns `Ok(())` on success, or an error if execution fails.
-    pub fn execute(self) -> Result<()> {
+    pub fn execute(self) -> DispatchResult {
         self.runtime.execute_command(&self.name, &self.args, &self.kwargs)
     }
 }
@@ -715,9 +747,9 @@ mod tests {
             _args: &[Value],
             _kwargs: &HashMap<String, Value>,
             _runtime: &mut Runtime,
-        ) -> Result<()> {
+        ) -> DispatchResult {
             self.commands.lock().unwrap().push(name.to_string());
-            Ok(())
+            DispatchResult::Continue
         }
     }
 
@@ -757,7 +789,7 @@ mod tests {
         let (env, commands) = TestEnv::new();
         runtime.env_enter(Box::new(env));
 
-        runtime.execute_command("test", &[], &HashMap::new()).unwrap();
+        assert!(matches!(runtime.execute_command("test", &[], &HashMap::new()), DispatchResult::Continue));
         assert_eq!(commands.lock().unwrap().len(), 1);
     }
 
@@ -767,7 +799,7 @@ mod tests {
         let (env, commands) = TestEnv::new();
         runtime.env_enter(Box::new(env));
 
-        runtime.execute_on_environment(0, "test", &[], &HashMap::new()).unwrap();
+        assert!(matches!(runtime.execute_on_environment(0, "test", &[], &HashMap::new()), DispatchResult::Continue));
         assert_eq!(commands.lock().unwrap().len(), 1);
     }
 
@@ -777,12 +809,12 @@ mod tests {
         let (env, commands) = TestEnv::new();
         runtime.env_enter(Box::new(env));
 
-        runtime.cmd("test")
+        let result = runtime.cmd("test")
             .arg("arg1")
             .arg(42)
             .kwarg("key", "value")
-            .execute()
-            .unwrap();
+            .execute();
+        assert!(matches!(result, DispatchResult::Continue));
 
         assert_eq!(commands.lock().unwrap().len(), 1);
     }
@@ -812,7 +844,7 @@ mod tests {
         runtime.env_enter(Box::new(env));
 
         let cmd = Command::new("direct_command", vec![]);
-        runtime.execute_command_obj(&cmd).unwrap();
+        assert!(matches!(runtime.execute_command_obj(&cmd), DispatchResult::Continue));
 
         let cmds = commands.lock().unwrap();
         assert_eq!(cmds.len(), 1);
